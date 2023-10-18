@@ -1,0 +1,344 @@
+//+------------------------------------------------------------------+
+//|                                                StochasiticEA.mq5 |
+//|                                                    liyanxiong999 |
+//|                                            www.icmarkets-zce.com |
+//+------------------------------------------------------------------+
+#property copyright "liyanxiong999"
+#property link      "www.icmarkets-zce.com"
+#property version   "1.00"
+//微信1：15888093182
+//微信2：8857863182
+#include <Trade\Trade.mqh>
+enum LOT_MODE_ENUM
+{
+ LOT_MODE_FIXED,    // fixed lots
+ LOT_MODE_MONEY,    // lots based on money
+ LOT_MODE_PCT_ACC   // risk percent of account
+};
+enum SIGNAL_MODE
+{
+ EXIT_CROSS_NORMAL,
+ ENTRY_CROSS_NORMAL,
+ EXIT_CROSS_REVERSED,
+ ENTRY_CROSS_REVERSED
+};
+input group           "===== General =====";
+static input long            InpMagicNumber    = 18857863182;                  // magic number
+static input string          InpComment        = " Stochasitic ";              // order comment
+input LOT_MODE_ENUM   InpLotMode               = LOT_MODE_PCT_ACC;             // lot mode
+input double          InpLotSize               = 1;                            // lots / money / percent
+input SIGNAL_MODE     InpSignalMode            = EXIT_CROSS_NORMAL;            // signal mode
+input int             InpStopLoss              = 200;                          // stop loss  points (0 = off) 
+input int             InpTakeProfit            = 200;                          // take profit points (0 = off)
+input bool            InpCloseOppositeSignal   = true;                         // close positions by Opposite signal
+input bool            InpIsTrailingStop        = false;                        // trailing stop
+input group           "===== Stochasitic =====";
+input int             InpKperiod               = 21;                            // Kperiod 
+input int             InpDperiod               = 3;                             // Dperiod   
+input int             Inpslowing               = 3;                             // slowing
+input ENUM_MA_METHOD  Inpma_method             = MODE_SMA;                      // ma_method
+input ENUM_STO_PRICE  Inpprice_field           = STO_LOWHIGH;                   // price_field 
+input double          InpUpperLevel            = 80;                            // upper level   
+input group           "===== clear bars filter =====";
+input bool            InpClearBarsReversed    = false;                          // reverse clear bars filter
+input int             InpClearBars             = 0;                             // clear bars (0 = off)
+
+int handleSTO;
+double BufferSTO[];
+MqlTick currentTick;
+CTrade trade;
+datetime openTimeBuy = 0;
+datetime openTimeSell = 0;
+int OnInit()
+  {
+//---
+    trade.SetExpertMagicNumber(InpMagicNumber);
+    if(!CheckInputs()){return INIT_PARAMETERS_INCORRECT;}
+    handleSTO = iStochastic(_Symbol,PERIOD_CURRENT,InpKperiod,InpDperiod,Inpslowing,Inpma_method,Inpprice_field);
+    if(handleSTO == INVALID_HANDLE)
+    {
+      Print("Failed to get Stochastic indicator");
+      return INIT_FAILED;
+    }
+   ArraySetAsSeries(BufferSTO,true);
+//---
+   return(INIT_SUCCEEDED);
+  }
+//+------------------------------------------------------------------+
+//| Expert deinitialization function                                 |
+//+------------------------------------------------------------------+
+void OnDeinit(const int reason)
+  {
+//---
+   if(handleSTO != INVALID_HANDLE)
+   {
+    IndicatorRelease(handleSTO);
+   }
+  }
+//+------------------------------------------------------------------+
+//| Expert tick function                                             |
+//+------------------------------------------------------------------+
+void OnTick()
+  {
+//---
+   if(!IsNewBar()){return;}
+   if(!SymbolInfoTick(_Symbol,currentTick)){Print("Failed to get tick"); return;}
+   if(CopyBuffer(handleSTO,0,0,3+InpClearBars,BufferSTO)<= 0){return;}
+   int cntBuy,cntSell;
+   if(!CountOpenPositions(_Symbol,cntBuy,cntSell,InpMagicNumber)){return;}
+   //---------------buy-----------
+    //if( cntBuy == 0 && BufferSTO[0] <= (100 - InpUpperLevel) && BufferSTO[0] > (100 - InpUpperLevel))
+    if(checkSignals(true,cntBuy) && checkClearBars(true))
+    {  
+       if(InpCloseOppositeSignal && cntSell != 0) {ClosePositions(_Symbol,InpMagicNumber,POSITION_TYPE_SELL);}      
+       double sl = InpStopLoss   == 0 ? 0 : currentTick.bid - InpStopLoss  *  _Point;
+       double tp = InpTakeProfit == 0 ? 0 : currentTick.bid + InpTakeProfit * _Point;
+       
+       if(!NormalizePrice(_Symbol,sl,sl)){return;}
+       if(!NormalizePrice(_Symbol,tp,tp)){return;}
+       double poslots ;
+       if(!CalculateLotSize(_Symbol,currentTick.bid - sl,poslots)){return;}
+       poslots  = sl == 0 ? InpLotSize : poslots;
+       double margin;        
+       if(OrderCalcMargin(ORDER_TYPE_BUY,_Symbol,poslots,currentTick.ask,margin) && margin > AccountInfoDouble(ACCOUNT_MARGIN_FREE)){return;}
+       trade.PositionOpen(_Symbol,ORDER_TYPE_BUY,poslots,currentTick.ask,sl,tp,_Symbol+" "+InpComment + " buy ");
+   }
+   //----------------sell-------------
+   //if( cntSell == 0 && BufferSTO[0] >= InpUpperLevel && BufferSTO[1] < InpUpperLevel)
+   if(checkSignals(false,cntSell) && checkClearBars(false))
+   {
+       if(InpCloseOppositeSignal && cntBuy != 0) {ClosePositions(_Symbol,InpMagicNumber,POSITION_TYPE_BUY);}   
+       double sl = InpStopLoss == 0 ? 0 :currentTick.ask + InpStopLoss * _Point;
+       double tp = InpTakeProfit == 0 ? 0 : currentTick.ask - InpTakeProfit * _Point;
+      
+       if(!NormalizePrice(_Symbol,sl,sl)){return;}
+       if(!NormalizePrice(_Symbol,tp,tp)){return;}
+       double poslots ;
+       if(!CalculateLotSize(_Symbol,sl - currentTick.ask,poslots )){return;} 
+       poslots  = sl == 0 ? InpLotSize : poslots;  
+       double margin;        
+       if(OrderCalcMargin(ORDER_TYPE_SELL,_Symbol,poslots,currentTick.bid,margin) && margin > AccountInfoDouble(ACCOUNT_MARGIN_FREE)){return;}
+       trade.PositionOpen(_Symbol,ORDER_TYPE_SELL,poslots,currentTick.bid,sl,tp,_Symbol+" "+InpComment + " sell ");
+   }  
+   //---trailing stop
+   if(InpIsTrailingStop)ExcuteTrailingStop(_Symbol,InpMagicNumber);
+  }
+//+------------------------------------------------------------------+
+bool checkClearBars(bool buy_sell)
+{
+ if(InpClearBars == 0){return true;}
+ bool checklower = (buy_sell && (InpSignalMode == EXIT_CROSS_NORMAL || InpSignalMode == ENTRY_CROSS_NORMAL ))
+                 || (!buy_sell && (InpSignalMode == EXIT_CROSS_REVERSED || InpSignalMode == ENTRY_CROSS_REVERSED ));
+ for(int i = 3; i < (3 + InpClearBars); i++)
+ {
+  if(!checklower && ((BufferSTO[i-1] > InpUpperLevel && BufferSTO[i] <= InpUpperLevel)
+                     || (BufferSTO[i-1] < InpUpperLevel && BufferSTO[i] >= InpUpperLevel)))
+  {
+   if(InpClearBarsReversed){return true;}
+   else{return false;}
+  }  
+  
+  if(checklower && ((BufferSTO[i-1] < (100 - InpUpperLevel) && BufferSTO[i] >= (100 - InpUpperLevel))
+                     || (BufferSTO[i-1] > (100 - InpUpperLevel) && BufferSTO[i] <= (100 - InpUpperLevel))))
+  {
+   if(InpClearBarsReversed){return true;}
+   else{return false;}
+  }                       
+ }  
+ if(InpClearBarsReversed){return false;}
+ else{return true;}              
+ return false;
+}
+bool checkSignals(bool buy_sell,int cntbuysell)
+{
+ if(cntbuysell > 0){return false;}
+ double lowerlevel = 100 - InpUpperLevel;
+ bool upperExitCross  = BufferSTO[1] >= InpUpperLevel && BufferSTO[2] < InpUpperLevel;
+ bool upperEntryCross = BufferSTO[1] <= InpUpperLevel && BufferSTO[2] > InpUpperLevel;
+ bool lowerExitCross  = BufferSTO[1] <= lowerlevel && BufferSTO[2] > lowerlevel;
+ bool lowerEntryCross = BufferSTO[1] >= lowerlevel && BufferSTO[2] < lowerlevel;  
+ switch(InpSignalMode)
+ {
+  case EXIT_CROSS_NORMAL    : return((buy_sell && lowerExitCross) || (!buy_sell && upperExitCross));
+  case ENTRY_CROSS_NORMAL   : return((buy_sell && lowerEntryCross)|| (!buy_sell && upperEntryCross));
+  case EXIT_CROSS_REVERSED  : return((buy_sell && upperExitCross) || (!buy_sell && lowerExitCross));
+  case ENTRY_CROSS_REVERSED : return((buy_sell && upperEntryCross)|| (!buy_sell && lowerEntryCross));
+ } 
+ return false;
+}
+bool CheckInputs()
+{
+ if(InpMagicNumber < 0)
+     {
+      Alert("magic < 0");
+      return false;
+     } 
+   if(InpLotSize < 0)
+     {
+      Alert("lot size < 0");
+      return false;
+     }
+    if(InpStopLoss < 0)
+     {
+      Alert("stop loss < 0");
+      return false;
+     }  
+      if(!InpCloseOppositeSignal && InpStopLoss == 0)
+     {
+      Alert("CloseOppositeSignal and stop loss = 0 ");
+      return false;
+     }  
+    if(InpTakeProfit < 0)
+     {
+      Alert("take profit < 0");
+      return false;
+     } 
+   if(InpKperiod <= 1)
+     {
+      Alert("KPeriod <= 1");
+      return false;
+     }  
+   if(InpUpperLevel <= 50 || InpUpperLevel >= 100)
+     {
+      Alert("UpperLevel <= 50 or >= 100 ");
+      return false;
+     }  
+ return true;
+}
+bool CalculateLotSize(string symbol,double slDistance,double &lotsize)
+{
+  lotsize = 0.0;
+  if(InpLotMode == LOT_MODE_FIXED) 
+    {
+     lotsize = InpLotSize;
+    }
+    else
+     {
+       double ticksize   = SymbolInfoDouble(symbol,SYMBOL_TRADE_TICK_SIZE);
+       double tickvalue  = SymbolInfoDouble(symbol,SYMBOL_TRADE_TICK_VALUE);
+       double volumstep  = SymbolInfoDouble(symbol,SYMBOL_VOLUME_STEP);
+       double riskmoney  = InpLotMode == LOT_MODE_MONEY ? InpLotSize : AccountInfoDouble(ACCOUNT_EQUITY) * InpLotSize / 100;
+       double moneyVolumeStep = (slDistance / ticksize) * tickvalue * volumstep;
+       if (moneyVolumeStep == 0) return false;
+       lotsize = MathFloor(riskmoney / moneyVolumeStep) * volumstep;    
+    }
+  lotsize = MathMax(lotsize,SymbolInfoDouble(_Symbol,SYMBOL_VOLUME_MIN));
+  lotsize = MathMin(lotsize,SymbolInfoDouble(_Symbol,SYMBOL_VOLUME_MAX));  
+ return true;
+}
+bool IsNewBar()
+{
+ static datetime previousTime = 0;
+ datetime currentTime = iTime(_Symbol,PERIOD_CURRENT,0);
+ if(previousTime != currentTime)
+ {
+  previousTime = currentTime;
+  return true;
+ }
+ return false;
+}
+bool NormalizePrice(string symbol,double price,double &normalizedPrice)
+{
+ double ticksize = 0;
+ if(!SymbolInfoDouble(symbol,SYMBOL_TRADE_TICK_SIZE,ticksize)){Print("Failed to get ticksize"); return false;}
+ normalizedPrice = NormalizeDouble(MathRound(price/ticksize) * ticksize,(int)SymbolInfoInteger(symbol,SYMBOL_DIGITS));
+ return true;
+}
+bool  CountOpenPositions(string symbol,int &countbuy,int &countsell,long magicnumber)
+{
+  countbuy = 0;
+  countsell = 0;
+  int posToatal = PositionsTotal();
+  for(int i = posToatal -1; i >= 0; i--)
+  {
+   //if(posToatal != PositionsTotal()){posToatal = PositionsTotal() ; i = posToatal;continue;}
+   ulong posTicket = PositionGetTicket(i);
+   if(posTicket <= 0){Print("Failed to get position ticket"); return false;}
+   if(!PositionSelectByTicket(posTicket)){Print("Failed to select by ticket");return false;}
+   long posmagic;
+   if(!PositionGetInteger(POSITION_MAGIC,posmagic)){Print("Failed to get magic"); return false; }
+   string possymbol;
+   if(!PositionGetString(POSITION_SYMBOL,possymbol)){Print("Failed to get symbol"); return false;}
+   if(posmagic == magicnumber && possymbol == symbol)
+   {
+     long postype ;
+     if(!PositionGetInteger(POSITION_TYPE,postype)) {Print("Failed to get position type");return false;}
+     if(postype == POSITION_TYPE_BUY){countbuy ++;}
+     if(postype == POSITION_TYPE_SELL){countsell ++;}
+   }
+  } 
+ return true;
+}
+
+void ExcuteTrailingStop(string symbol,long magicnum)
+{
+ if(InpStopLoss == 0 || !InpIsTrailingStop ) {return;}
+ int posToatal = PositionsTotal();
+  for(int i = posToatal -1; i >= 0; i--)
+  {
+   ulong posTicket = PositionGetTicket(i);
+   if(posTicket <= 0){Print("Failed to get position ticket"); return;}
+   long magicnumber;
+   if(!PositionGetInteger(POSITION_MAGIC,magicnumber)){Print("Failed to get magic"); return; }
+   string possymbol;
+   if(!PositionGetString(POSITION_SYMBOL,possymbol)){Print("Failed to get symbol"); return;}
+   
+   if(magicnumber == magicnum && possymbol == symbol)
+   {
+     long postype ;
+     if(!PositionGetInteger(POSITION_TYPE,postype)){Print("Failed to get positions type");return;}
+     double currentSL,currentTP;
+     if(!PositionGetDouble(POSITION_SL,currentSL)){Print("Failed to get stop loss");return;}
+     if(!PositionGetDouble(POSITION_TP,currentTP)){Print("Failed to get take profit");return;}
+     double currentPrice = postype == POSITION_TYPE_BUY ? currentTick.bid : currentTick.ask;
+     int    m            = postype == POSITION_TYPE_BUY ? 1 : -1;   
+     double newSL = NormalizeDouble((currentPrice -  m * InpStopLoss * SymbolInfoDouble(symbol,SYMBOL_POINT)),(int)SymbolInfoInteger(symbol,SYMBOL_DIGITS));
+    
+     if(newSL * m < currentSL * m || NormalizeDouble(MathAbs(newSL - currentSL),(int)SymbolInfoInteger(symbol,SYMBOL_DIGITS)) < SymbolInfoDouble(symbol,SYMBOL_POINT) )
+     {
+      Print("no new stop loss needed ");
+      continue;
+     }
+     
+    long  stoplevel = SymbolInfoInteger(symbol,SYMBOL_TRADE_STOPS_LEVEL);
+    if(stoplevel != 0 && MathAbs(currentSL - newSL) < stoplevel * SymbolInfoDouble(symbol,SYMBOL_POINT))
+    {
+      Print("new stop loss inside stop level ");
+      continue;
+    }
+    if(!trade.PositionModify(posTicket,newSL,currentTP))
+    {
+      Print("Failed to modify position #",(string)posTicket,"new stop loss : ",(string)newSL);
+      return;
+    }
+   }
+  }
+ 
+}
+
+bool ClosePositions(string symbol,long magicnum,ENUM_POSITION_TYPE type)
+{
+  int posToatal = PositionsTotal();
+  for(int i = posToatal -1; i >= 0; i--)
+  {
+   if(posToatal != PositionsTotal()){posToatal = PositionsTotal() ; i = posToatal;continue;}
+   ulong posTicket = PositionGetTicket(i);
+   if(posTicket <= 0){Print("Failed to get position ticket"); return false;}
+   long magicnumber;
+   if(!PositionGetInteger(POSITION_MAGIC,magicnumber)){Print("Failed to get magic"); return false; }
+   string possymbol;
+   if(!PositionGetString(POSITION_SYMBOL,possymbol)){Print("Failed to get symbol"); return false;}
+   if(magicnumber == magicnum && possymbol == symbol)
+   {
+    long postype ;
+    if(!PositionGetInteger(POSITION_TYPE,postype)){Print("Failed to get position type"); return false;}
+    if(postype == type)trade.PositionClose(posTicket);
+    if(trade.ResultRetcode() != TRADE_RETCODE_DONE)
+    {
+     Print("Failed to close position. Result: "+(string)trade.ResultRetcode()+":"+trade.ResultRetcodeDescription());
+     return false;
+    }
+   }
+  }
+  return true;
+}
