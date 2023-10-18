@@ -1,0 +1,257 @@
+//+------------------------------------------------------------------+
+//|                              MultipleSymbolsBollingerBandsEA.mq5 |
+//|                                                    liyanxiong999 |
+//|                                            www.icmarkets-zce.com |
+//+------------------------------------------------------------------+
+#property copyright "liyanxiong999"
+#property link      "www.icmarkets-zce.com"
+#property version   "1.00"
+#include <StdLibErr.mqh>
+#include <Trade\Trade.mqh>
+
+input string InpTradeSymbols        = "EURUSD|GBPUSD|XAUUSD|USDJPY|XTIUSD";   // Symbol(s) ALL or CURRENT
+static input long InpMagicNumber    = 3182;                            // magic number
+input double InpLotSize             = 0.1;                                    // lots 
+input int    InpBBandsPeriods       = 20;                                     // Bollinger Bands Periods
+input double InpBBandsDeviations    = 1.0;                                    // Bollinger Bands Deviations
+
+input string AllSymbolsString       = "EURUSD|GBPUSD|XAUUSD|USDJPY|XTIUSD|GBPJPY|AUDUSD|USDCHF|USTEC|BTCUSD";// ALL 
+
+int    NumberOfTradeableSymbols;
+string SymbolArray[];
+int    TicksReceivedCount           = 0;
+int    handle_BB[];
+ulong  OpenTradeOrderTicket[];
+CTrade trade;
+int OnInit()
+  {
+//---
+   if(InpTradeSymbols  == "CURRENT")
+   {
+    NumberOfTradeableSymbols = 1;
+    ArrayResize(SymbolArray,1);
+    SymbolArray[0] = _Symbol;
+    Print(" EA will process ",SymbolArray[0]," only");
+   }
+   else
+   {
+    string TradeSymbolsToUse = "";
+    if(InpTradeSymbols == "ALL")
+       TradeSymbolsToUse = AllSymbolsString;
+    else
+       TradeSymbolsToUse = InpTradeSymbols;
+    NumberOfTradeableSymbols = StringSplit(TradeSymbolsToUse,'|',SymbolArray); 
+    Print(" EA will process ",TradeSymbolsToUse);
+   }
+   
+   ResizeCoreArrays();//trade array
+   ResizeIndicatorHandleArrays(); // indicator array
+   if(!SetUpIndicatorHandles())
+   {
+    return INIT_FAILED;
+   }
+   trade.SetExpertMagicNumber(InpMagicNumber);
+//---
+   return(INIT_SUCCEEDED);
+  }
+//+------------------------------------------------------------------+
+//| Expert deinitialization function                                 |
+//+------------------------------------------------------------------+
+void OnDeinit(const int reason)
+  {
+//---
+   
+  }
+//+------------------------------------------------------------------+
+//| Expert tick function                                             |
+//+------------------------------------------------------------------+
+void OnTick()
+  {
+//---
+  TicksReceivedCount ++;
+  string indicatorMetrics = "";
+  for(int i = 0; i < NumberOfTradeableSymbols; i++)
+  {
+   string CurrentIndicatorValue;
+   string OpenSignalStatus = GetOpenSignalStatus(i,CurrentIndicatorValue);
+   
+   StringConcatenate(indicatorMetrics,indicatorMetrics,SymbolArray[i],"|",CurrentIndicatorValue," | OPEN_STATUS = ",OpenSignalStatus);
+   string CloseSignalStatus = GetCloseSignalStatus(i);
+   
+   StringConcatenate(indicatorMetrics,indicatorMetrics," | CLOSE_STATUS = ",CloseSignalStatus,"\n\r");
+   
+   if(OpenSignalStatus == "LONG" || OpenSignalStatus == "SHORT")
+       processTradeOpen(i,OpenSignalStatus);
+   if(CloseSignalStatus == "CLOSE_LONG" || CloseSignalStatus == "CLOSE_SHORT")
+       processTradeClose(i,CloseSignalStatus);
+  }
+   if(!MQLInfoInteger(MQL_TESTER))
+      OutputStatusToChart(indicatorMetrics);
+  }
+//+------------------------------------------------------------------+
+void ResizeCoreArrays()
+{
+ ArrayResize(OpenTradeOrderTicket,NumberOfTradeableSymbols);
+}
+void ResizeIndicatorHandleArrays()
+{
+ ArrayResize(handle_BB,NumberOfTradeableSymbols);
+}
+bool SetUpIndicatorHandles()
+{
+ for(int i = 0; i < NumberOfTradeableSymbols; i++)
+ {
+  ResetLastError();
+  handle_BB[i] = iBands(SymbolArray[i],PERIOD_CURRENT,InpBBandsPeriods,0,InpBBandsDeviations,PRICE_CLOSE);
+  if(handle_BB[i] == INVALID_HANDLE)
+  {
+   string outputMessage = "";
+   if(GetLastError() == 4302)
+       outputMessage = "symbol needs to added to the MarketWatch";
+   else
+       StringConcatenate(outputMessage,"(error code ",GetLastError(),")");
+   MessageBox(SymbolArray[i],outputMessage);
+   return false;
+  }
+ }
+ return true;
+}
+string GetOpenSignalStatus(int index,string &signalMetrics)
+{
+ string CurrentSymbol = SymbolArray[index];
+ int    numValuesNeeded = 3;
+ double bufferUpper[];
+ double bufferLower[];
+ bool fillSuccessUpper = tlamCoppyBuffer(handle_BB[index],UPPER_BAND,bufferUpper,numValuesNeeded,CurrentSymbol,"BBANDS");
+ bool fillSuccessLower = tlamCoppyBuffer(handle_BB[index],LOWER_BAND,bufferLower,numValuesNeeded,CurrentSymbol,"BBANDS");
+ if(fillSuccessUpper == false || fillSuccessLower == false)
+ return("FILL_ERROR");
+ double CurrentBBUpper = bufferUpper[0];
+ double CurrentBBLower = bufferLower[0];
+ double CurrentClose = iClose(CurrentSymbol,PERIOD_CURRENT,0);
+ StringConcatenate(signalMetrics,"UPPER = ",DoubleToString(CurrentBBUpper,(int)SymbolInfoInteger(CurrentSymbol,SYMBOL_DIGITS)),
+                                  "LOWER = ",DoubleToString(CurrentBBLower,(int)SymbolInfoInteger(CurrentSymbol,SYMBOL_DIGITS)));
+ // ---- ENTRY LOGIC---
+ if(CurrentClose > CurrentBBUpper)
+ return "LONG";
+ else if(CurrentClose < CurrentBBLower)
+ return "SHORT";
+ else
+ return "NO_TRADE";
+}
+string GetCloseSignalStatus(int index)
+{
+ string CurrentSymbol = SymbolArray[index];
+ int    numValuesNeeded = 3;
+ double bufferUpper[];
+ double bufferLower[];
+ double bufferMiddle[];
+ bool fillSuccessUpper = tlamCoppyBuffer(handle_BB[index],UPPER_BAND,bufferUpper,numValuesNeeded,CurrentSymbol,"BBANDS");
+ bool fillSuccessLower = tlamCoppyBuffer(handle_BB[index],LOWER_BAND,bufferLower,numValuesNeeded,CurrentSymbol,"BBANDS");
+ bool fillSuccessMiddle = tlamCoppyBuffer(handle_BB[index],BASE_LINE,bufferMiddle,numValuesNeeded,CurrentSymbol,"BBANDS");
+ if(fillSuccessUpper == false || fillSuccessLower == false || fillSuccessMiddle == false)
+ return("FILL_ERROR");
+ double CurrentBBUpper = bufferUpper[0];
+ double CurrentBBLower = bufferLower[0];
+ double CurrentBBMiddle = bufferMiddle[0];
+ double CurrentClose = iClose(CurrentSymbol,PERIOD_CURRENT,0);
+
+ // ---- EXIT LOGIC---
+ if(CurrentClose < CurrentBBMiddle)
+ return "CLOSE_LONG";
+ else 
+ return "CLOSE_SHORT";
+}
+void processTradeOpen(int index, string directionOpen)
+{
+  string CurrentSymbol = SymbolArray[index];
+  //------- add ---
+  MqlTick CurrentTick;
+  if(!SymbolInfoTick(CurrentSymbol,CurrentTick)){Print(CurrentSymbol," failed to get tick"); return;}
+   int cntBuy,cntSell;
+   if(!CountOpenPositions(CurrentSymbol,cntBuy,cntSell,InpMagicNumber)){return;}
+  if(directionOpen == "LONG" && cntBuy == 0)
+  trade.PositionOpen(CurrentSymbol,ORDER_TYPE_BUY,InpLotSize,CurrentTick.ask,0,0,CurrentSymbol+" " + directionOpen);
+  if(directionOpen == "SHORT" && cntSell == 0)
+  trade.PositionOpen(CurrentSymbol,ORDER_TYPE_SELL,InpLotSize,CurrentTick.bid,0,0,CurrentSymbol+" " + directionOpen);
+}
+void processTradeClose(int index, string directionClose)
+{
+ string CurrentSymbol = SymbolArray[index];
+ //-------- add ---
+ int cntBuy,cntSell;
+   if(!CountOpenPositions(CurrentSymbol,cntBuy,cntSell,InpMagicNumber)){return;}
+ if(directionClose == "CLOSE_LONG" && cntBuy != 0)
+    ClosePositions(CurrentSymbol,InpMagicNumber,POSITION_TYPE_BUY);
+ if(directionClose == "CLOSE_SHORT" && cntSell != 0)
+    ClosePositions(CurrentSymbol,InpMagicNumber,POSITION_TYPE_SELL);  
+ 
+}
+void OutputStatusToChart(string Metrics)
+{
+ double offsetInHours = (double)((TimeCurrent() - TimeGMT()) / 3600);// GMT offset
+ string symbolsText = "Multiple Symbols Trading:";
+ for(int i = 0;i < NumberOfTradeableSymbols; i++)
+ {
+  StringConcatenate(symbolsText,symbolsText," ",SymbolArray[i]);
+ }
+ Comment("\n\rMT5 SERVER TIME:",TimeCurrent(),"GMT ",StringFormat("%+.1f",offsetInHours),"\n\r\n\r",_Symbol,
+         " TICK RECEIVED:", TicksReceivedCount,"\n\r\n\r", symbolsText,"\n\r\n\r",Metrics);
+}
+bool tlamCoppyBuffer(int handle,int buffernum,double &buffer[],int numValues,string symbol,string indicatorname)
+{ 
+ ArraySetAsSeries(buffer,true);
+ if(CopyBuffer(handle,buffernum,0,numValues,buffer)<= 0){Print("Failed to get indicator buffer ");return false;}
+return true;
+}
+bool  CountOpenPositions(string symbol,int &countbuy,int &countsell,long magicnumber)
+{
+  countbuy = 0;
+  countsell = 0;
+  int posToatal = PositionsTotal();
+  for(int i = posToatal -1; i >= 0; i--)
+  {
+   //if(posToatal != PositionsTotal()){posToatal = PositionsTotal() ; i = posToatal;continue;}
+   ulong posTicket = PositionGetTicket(i);
+   if(posTicket <= 0){Print("Failed to get position ticket"); return false;}
+   if(!PositionSelectByTicket(posTicket)){Print("Failed to select by ticket");return false;}
+   long posmagic;
+   if(!PositionGetInteger(POSITION_MAGIC,posmagic)){Print("Failed to get magic"); return false; }
+   string possymbol;
+   if(!PositionGetString(POSITION_SYMBOL,possymbol)){Print("Failed to get symbol"); return false;}
+   if(posmagic == magicnumber && possymbol == symbol)
+   {
+     long postype ;
+     if(!PositionGetInteger(POSITION_TYPE,postype)) {Print("Failed to get position type");return false;}
+     if(postype == POSITION_TYPE_BUY){countbuy ++;}
+     if(postype == POSITION_TYPE_SELL){countsell ++;}
+   }
+  } 
+ return true;
+}
+bool ClosePositions(string symbol,long magicnum,ENUM_POSITION_TYPE type)
+{
+  int posToatal = PositionsTotal();
+  for(int i = posToatal -1; i >= 0; i--)
+  {
+   if(posToatal != PositionsTotal()){posToatal = PositionsTotal() ; i = posToatal;continue;}
+   ulong posTicket = PositionGetTicket(i);
+   if(posTicket <= 0){Print("Failed to get position ticket"); return false;}
+   long magicnumber;
+   if(!PositionGetInteger(POSITION_MAGIC,magicnumber)){Print("Failed to get magic"); return false; }
+   string possymbol;
+   if(!PositionGetString(POSITION_SYMBOL,possymbol)){Print("Failed to get symbol"); return false;}
+   if(magicnumber == magicnum && possymbol == symbol)
+   {
+    long postype ;
+    if(!PositionGetInteger(POSITION_TYPE,postype)){Print("Failed to get position type"); return false;}
+    if(postype == type)trade.PositionClose(posTicket);
+    if(trade.ResultRetcode() != TRADE_RETCODE_DONE)
+    {
+     Print("Failed to close position. Result: "+(string)trade.ResultRetcode()+":"+trade.ResultRetcodeDescription());
+     return false;
+    }
+   }
+  }
+  return true;
+}
