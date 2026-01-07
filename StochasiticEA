@@ -7,7 +7,7 @@
 #property link      "www.icmarkets-zce.com"
 #property version   "1.00"
 //微信1：15888093182
-//微信2：8857863182
+//微信2：18857863182
 #include <Trade\Trade.mqh>
 enum LOT_MODE_ENUM
 {
